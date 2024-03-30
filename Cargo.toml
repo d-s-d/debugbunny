@@ -1,0 +1,15 @@
+[package]
+name = "debugbunny"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.76"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["charset"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+tokio = { version = "1.37", features = ["full"] }
+thiserror = "1"
+zstd = "0.13"
