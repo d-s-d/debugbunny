@@ -1,8 +1,7 @@
-use std::{borrow::Cow, future::Future, process::Output, sync::Arc};
+use std::{future::Future, process::Output, sync::Arc};
 
 use serde::Serialize;
 use tokio::{io::AsyncWrite, sync::Mutex};
-use zstd::zstd_safe::WriteBuf;
 
 use crate::{
     config::ScrapeTargetConfig,
@@ -47,10 +46,10 @@ where
     fn process(
         &self,
         config: &ScrapeTargetConfig,
-        result: ScrapeResult<ScrapeOk>,
+        _result: ScrapeResult<ScrapeOk>,
     ) -> impl Future<Output = ()> + Send {
         let writer = self.writer.clone();
-        let config = config.clone();
+        let _config = config.clone();
         async move {
             // process results
 
