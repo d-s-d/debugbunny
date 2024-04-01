@@ -29,7 +29,7 @@ pub trait ScrapeService {
 pub type ScrapeResult<T> = Result<T, ScrapeErr>;
 
 pub enum ScrapeOk {
-    HttpResponse(reqwest::Response),
+    HttpResponse(http::Response<Vec<u8>>),
     CommandResponse(std::process::Output),
 }
 

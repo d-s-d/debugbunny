@@ -1,3 +1,4 @@
+use http_body_util::BodyExt;
 use reqwest::Url;
 
 use crate::scrape_target::{FutureScrapeResult, ScrapeOk, ScrapeService};
@@ -19,6 +20,18 @@ impl ScrapeService for HttpScrapeTarget {
     fn call(&mut self) -> FutureScrapeResult<ScrapeOk> {
         let client = self.client.clone();
         let url = self.url.clone();
-        Box::pin(async move { Ok(client.get(url).send().await.map(ScrapeOk::HttpResponse)?) })
+        // todo(dsd): Consider using hyper directly instead of reqwest.
+        Box::pin(async move {
+            // We want to fully materialize the response inside this method.
+            // E.g., the outer timeout should also apply to reading the body,
+            // and any open underlying response reader, etc. should be closed
+            // before we return.
+            let resp = client.get(url).send().await?;
+            let (parts, body) = http::Response::from(resp).into_parts();
+            let body = BodyExt::collect(body).await.map(|b| b.to_bytes())?.to_vec();
+            Ok(ScrapeOk::HttpResponse(http::Response::from_parts(
+                parts, body,
+            )))
+        })
     }
 }

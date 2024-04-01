@@ -1,16 +1,30 @@
 /// A helper construct to chunk up a contiguous byte array or treat a vector of
-/// chunks as a single contiguous byte string. In either case, the construct
-/// avoids additional allocations.
+/// chunks as a single contiguous byte string. In either case, additional
+/// allocations are avoided.
 use std::{borrow::Cow, io::Read};
 
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use sha2::Digest;
 use thiserror::Error;
 
-/// The default chunks size is assume
+/// The default chunk size is chosen with logging in mind: We assume that log
+/// messages are text-based and may have a maximum size of 4096 bytes. This
+/// assumption is informed by the limits systemd-services, such as gatewayd,
+/// place on the size of log-message when encoding journald-entries as
+/// [json](https://github.com/systemd/systemd/blob/3799fa803efb04cdd1f1b239c6c64803fe85d13a/src/shared/logs-show.c#L46).
+///
+/// Assuming that each chunk is serialized to a log message and the chunk data
+/// is base64 encoded, the choice of the default chunk size comes about as
+/// follows: The Base64-encoding represents 3 bytes of input data in 4 bytes.
+/// Thus, a base64-encoded chunk of length 2922 will end up having a length of
+/// `2922*4/3 == 3896` bytes. Further assuming that the chunk is encoded as part
+/// of a json-object, this leaves 200 bytes for additional metadata.
 pub const DEFAULT_CHUNK_SIZE: usize = 2922;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Id([u8; 32]);
+#[serde_as]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Id(#[serde_as(as = "serde_with::hex::Hex")] [u8; 32]);
 
 impl From<[u8; 32]> for Id {
     fn from(value: [u8; 32]) -> Self {
@@ -33,20 +47,34 @@ pub struct Chunks<'a> {
 }
 
 impl<'a> Chunks<'a> {
-    pub fn new<T: AsRef<[u8]>>(data: T, chunk_size: usize) -> Self {
-        let id = (*sha2::Sha256::digest(data.as_ref())).into();
+    pub fn new<T: Into<Vec<u8>>>(data: T, chunk_size: usize) -> Self {
+        let data: Vec<u8> = data.into();
+        let id = (*sha2::Sha256::digest(&data)).into();
         Self {
             id,
             chunk_size,
-            data: ChunksData::Owned(data.as_ref().to_owned()),
+            data: ChunksData::Contiguous(data),
         }
     }
 
-    pub fn from_split(v: Vec<Chunk<'a>>) -> Result<Chunks<'a>, ChunksError> {
+    /// Create a Chunks-object from chunks. The `remaining`-field will be
+    /// overriden with the actual remaining bytes.
+    pub fn from_chunks(mut v: Vec<Chunk<'a>>) -> Result<Chunks<'a>, ChunksError>
+    {
+        let mut r_iter = v.iter().rev();
         let chunk_size = v.first().map(|c| c.data.len()).unwrap_or(0);
-        if v.iter().rev().skip(1).any(|c| c.data.len() != chunk_size) {
+        if r_iter.clone().skip(1).any(|c| c.data.len() != chunk_size) {
             return Err(ChunksError::ChunksSizeMismatch);
         }
+
+        let mut last_size = v.last().map(|c| c.data.len()).unwrap_or(0);
+        r_iter.try_for_each(|c| {
+            if c.remaining != last_size {
+                return Err(ChunksError::InvalidRemainingValue);
+            }
+            last_size += chunk_size;
+            Ok(())
+        })?;
 
         let mut hasher = sha2::Sha256::new();
         v.iter().for_each(|c| hasher.update(c.data.as_ref()));
@@ -55,17 +83,17 @@ impl<'a> Chunks<'a> {
         Ok(Self {
             id,
             chunk_size,
-            data: ChunksData::Split(v),
+            data: ChunksData::Chunked(v),
         })
     }
 
-    pub fn iter(&self) -> Box<dyn Iterator<Item = Chunk<'_>> + '_> {
+    pub fn iter(&self) -> Box<dyn Iterator<Item = Chunk<'_>> + '_ + Send> {
         match &self.data {
-            ChunksData::Split(vs) => Box::new(vs.iter().map(|c| Chunk {
+            ChunksData::Chunked(vs) => Box::new(vs.iter().map(|c| Chunk {
                 data: Cow::from(c.data.as_ref()),
                 remaining: c.remaining,
             })),
-            ChunksData::Owned(d) => {
+            ChunksData::Contiguous(d) => {
                 let total_len = d.len();
                 Box::new(
                     d.chunks(self.chunk_size)
@@ -100,6 +128,8 @@ impl<'a> Chunks<'a> {
 pub enum ChunksError {
     #[error("All but the last chunk must have the same length.")]
     ChunksSizeMismatch,
+    #[error("At least one value of a 'remaining'-field is invalid.")]
+    InvalidRemainingValue,
 }
 
 impl From<Vec<u8>> for Chunks<'_> {
@@ -118,16 +148,20 @@ impl<'a> Read for ChunksRead<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let buf_len = buf.len();
         match &self.chunks.data {
-            ChunksData::Owned(d) => {
+            ChunksData::Contiguous(d) => {
                 let actual_len = (d.len() - self.offset).min(buf_len);
                 buf[0..actual_len].clone_from_slice(&d[self.offset..(self.offset + actual_len)]);
                 self.offset += actual_len;
                 Ok(actual_len)
             }
-            ChunksData::Split(c) => {
+            ChunksData::Chunked(c) => {
+                if c.is_empty() {
+                    return Ok(0);
+                }
                 let idx = self.offset / self.chunk_size;
                 let chunk_offset = self.offset - self.chunk_size * idx;
                 let src = c[idx].data.as_ref();
+                assert!(src.len() >= chunk_offset);
                 let actual_len = (src.len() - chunk_offset).min(buf_len);
                 buf[0..actual_len]
                     .clone_from_slice(&src[chunk_offset..(chunk_offset + actual_len)]);
@@ -139,8 +173,8 @@ impl<'a> Read for ChunksRead<'a> {
 }
 
 enum ChunksData<'a> {
-    Owned(Vec<u8>),
-    Split(Vec<Chunk<'a>>),
+    Contiguous(Vec<u8>),
+    Chunked(Vec<Chunk<'a>>),
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +204,7 @@ mod tests {
         assert_ne!(id0, Id::from([0u8; 32]));
 
         let chunks1 =
-            Chunks::from_split(chunks0.iter().map(|x| x.clone().into_owned()).collect()).unwrap();
+            Chunks::from_chunks(chunks0.iter().map(|x| x.clone().into_owned()).collect()).unwrap();
         let id1 = chunks1.id();
 
         assert_eq!(id0, id1);
@@ -185,7 +219,7 @@ mod tests {
         std::io::copy(&mut chunks0.reader(), &mut buf0).unwrap();
 
         let chunks1 =
-            Chunks::from_split(chunks0.iter().map(|x| x.clone().into_owned()).collect()).unwrap();
+            Chunks::from_chunks(chunks0.iter().map(|x| x.clone().into_owned()).collect()).unwrap();
         let mut buf1: Vec<u8> = vec![];
         std::io::copy(&mut chunks1.reader(), &mut buf1).unwrap();
 
