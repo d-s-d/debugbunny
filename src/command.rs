@@ -1,3 +1,5 @@
+//! A scrape service that executes commands and collects their output.
+
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -17,9 +19,23 @@ where
     }
 }
 
+pub fn new_from_config(
+    cmd: String,
+    args: Vec<String>,
+) -> CommandScrapeService<impl Fn() -> Command + 'static> {
+    let f = move || {
+        let mut cmd = Command::new(cmd.clone());
+        args.iter().for_each(|a| {
+            cmd.arg(a);
+        });
+        cmd
+    };
+    CommandScrapeService::new(f)
+}
+
 impl<T> ScrapeService for CommandScrapeService<T>
 where
-    T: Fn() -> Command + 'static,
+    T: Fn() -> Command + Send + 'static,
 {
     type Response = ScrapeOk;
     fn call(&mut self) -> FutureScrapeResult<ScrapeOk> {

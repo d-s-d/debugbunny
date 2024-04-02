@@ -13,9 +13,9 @@ pub struct Config {
 pub struct ScrapeTargetConfig {
     /// todo(dsd): replace this with a string represention.
     #[serde_as(as = "DurationSeconds<u64>")]
-    interval: Duration,
-    timeout: Option<Duration>,
-    action: Action,
+    pub interval: Duration,
+    pub timeout: Option<Duration>,
+    pub action: Action,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -51,9 +51,7 @@ where
     D: Deserializer<'de>,
 {
     Option::<&str>::deserialize(d).and_then(|s| match s {
-        Some(s) => Ok(Some(
-            Method::from_str(&s).map_err(serde::de::Error::custom)?,
-        )),
+        Some(s) => Ok(Some(Method::from_str(s).map_err(serde::de::Error::custom)?)),
         None => Ok(None),
     })
 }

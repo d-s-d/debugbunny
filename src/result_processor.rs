@@ -1,22 +1,39 @@
-use std::{borrow::Cow, future::Future, io::Cursor, process::Output, sync::Arc};
+//! Process results of scrape calls.
+//!
+//! The [LogOutputWriter] serializes results as JSON-objects, such that they can
+//! be logged. The idea is that the output writer is given a `AsyncWrite` that
+//! represents some logging channel (e.g. just `stderr` in case of a
+//! systemd-service).
+
+use std::{
+    borrow::Cow,
+    future::Future,
+    io::{self, Cursor},
+    process::Output,
+    sync::Arc,
+};
 
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{
+    base64::{Base64, Standard},
+    formats::Padded,
+    serde_as, DisplayFromStr,
+};
 use tokio::{io::AsyncWrite, sync::Mutex};
 
 use crate::{
-    chunkify::{Chunks, Id, DEFAULT_CHUNK_SIZE},
+    chunks::{Chunks, Id, DEFAULT_CHUNK_SIZE},
     config::ScrapeTargetConfig,
     scrape_target::{ScrapeOk, ScrapeResult},
 };
 
-pub trait ScrapeResultProcessor: Clone {
+pub trait ScrapeResultProcessor: Sync + Send + Clone {
     fn process(
         &self,
         config: &ScrapeTargetConfig,
         result: ScrapeResult<ScrapeOk>,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = io::Result<()>> + Send;
 }
 
 /// Serialize the result of a scrape call as JSON-object and write it to the
@@ -50,13 +67,13 @@ where
 
 impl<T> ScrapeResultProcessor for LogOutputWriter<T>
 where
-    T: AsyncWrite + Unpin + Send + 'static
+    T: AsyncWrite + Unpin + Send + 'static,
 {
     fn process(
         &self,
         config: &ScrapeTargetConfig,
         result: ScrapeResult<ScrapeOk>,
-    ) -> impl Future<Output = ()> + Send {
+    ) -> impl Future<Output = io::Result<()>> + Send {
         let writer = self.writer.clone();
         let config = config.clone();
         async move {
@@ -65,47 +82,56 @@ where
             // io-thread.
             let (mut meta, chunks) = tokio::task::spawn_blocking(move || {
                 let (r, c) = ScrapeResultRepr::from_scrape_result(result);
-                let meta = ScrapeCall { target_config: config, result: r };    
+                let meta = ScrapeCallRepr {
+                    target_config: config,
+                    result: r,
+                };
                 let meta = Cursor::new(serde_json::to_vec(&meta).expect("can't fail"));
                 (meta, c)
-            }).await.expect("Could not join blocking code!");
+            })
+            .await
+            .expect("Could not join blocking code!");
 
-            {
-                let mut guard = writer.lock().await;
-                let _ = tokio::io::copy(&mut meta, &mut *guard).await;
+            // All heavy computation is done here, so grab the mutex and write
+            // the log lines.
+            let mut guard = writer.lock().await;
+            tokio::io::copy(&mut meta, &mut *guard).await?;
 
-                if let Some(chunks) = chunks {
-                    let id = chunks.id();
-                    for c in chunks.iter() {
-                        #[derive(Serialize)]
-                        struct ChunkRepr<'a> {
-                            id: Id,
-                            remaining: usize,
-                            data: Cow<'a, [u8]>
-                        }
+            if let Some(chunks) = chunks {
+                let id = chunks.id();
+                for c in chunks.iter() {
+                    let c = ChunkRepr {
+                        id,
+                        remaining: c.remaining,
+                        data: c.data,
+                    };
 
-                        let c = ChunkRepr {
-                            id: id,
-                            remaining: c.remaining,
-                            data: c.data
-                        };
-
-                        let mut chunk_json = Cursor::new(serde_json::to_vec(&c).expect("can't fail"));
-                        let _ = tokio::io::copy(&mut chunk_json, &mut *guard).await;
-                    }
+                    let mut chunk_json = Cursor::new(serde_json::to_vec(&c).expect("can't fail"));
+                    tokio::io::copy(&mut chunk_json, &mut *guard).await?;
                 }
             }
+            Ok(())
         }
     }
 }
 
+// # Boilerplate for serialization of scrape results.
+
+/// The 'wire'-representation of a chunk of data.
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkRepr<'a> {
+    id: Id,
+    remaining: usize,
+    #[serde_as(as = "Base64<Standard, Padded>")]
+    data: Cow<'a, [u8]>,
+}
+
 #[derive(Serialize, Deserialize)]
-pub struct ScrapeCall {
+pub struct ScrapeCallRepr {
     target_config: ScrapeTargetConfig,
     result: ScrapeResultRepr,
 }
-
-// Boilerplate for serialization of scrape results.
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]

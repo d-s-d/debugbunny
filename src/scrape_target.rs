@@ -5,7 +5,8 @@ use tokio::{
     time::{error::Elapsed, Instant},
 };
 
-pub type FutureScrapeResult<T> = Pin<Box<dyn Future<Output = ScrapeResult<T>>>>;
+pub type FutureScrapeResult<T> = Pin<Box<dyn Future<Output = ScrapeResult<T>> + Send>>;
+pub type BoxedScrapeService = Box<dyn ScrapeService<Response = ScrapeOk>>;
 
 /// A [ScrapeService] is a call that eventually produces a scrape result
 /// asynchronously. A scrape target is a special case of a scrape service.
@@ -21,9 +22,17 @@ pub type FutureScrapeResult<T> = Pin<Box<dyn Future<Output = ScrapeResult<T>>>>;
 // expose some low-level details of rust's async semantics.
 //
 // todo(dsd): test whether we can use `impl Future` the return position here.
-pub trait ScrapeService {
-    type Response;
+pub trait ScrapeService: Send {
+    type Response: Send + 'static;
     fn call(&mut self) -> FutureScrapeResult<Self::Response>;
+}
+
+impl<T: ScrapeService + ?Sized> ScrapeService for Box<T> {
+    type Response = T::Response;
+
+    fn call(&mut self) -> FutureScrapeResult<Self::Response> {
+        (**self).call()
+    }
 }
 
 pub type ScrapeResult<T> = Result<T, ScrapeErr>;
@@ -58,7 +67,7 @@ impl<T> Timeout<T> {
 impl<T> ScrapeService for Timeout<T>
 where
     T: ScrapeService,
-    T::Response: 'static,
+    T::Response: Send + 'static,
 {
     type Response = T::Response;
     fn call(&mut self) -> FutureScrapeResult<Self::Response> {

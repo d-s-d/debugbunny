@@ -1,3 +1,5 @@
+//! A scrape service that sends HTTP-requests and collects the responses.
+
 use http_body_util::BodyExt;
 use reqwest::Url;
 
@@ -9,8 +11,7 @@ pub struct HttpScrapeTarget {
 }
 
 impl HttpScrapeTarget {
-    pub fn new(client: &reqwest::Client, url: Url) -> Self {
-        let client = client.clone();
+    pub fn new(client: reqwest::Client, url: Url) -> Self {
         Self { client, url }
     }
 }

@@ -1,6 +1,6 @@
-/// A helper construct to chunk up a contiguous byte array or treat a vector of
-/// chunks as a single contiguous byte string. In either case, additional
-/// allocations are avoided.
+//! A helper construct to chunk up a contiguous byte array or treat a vector of
+//! chunks as a single contiguous byte string. In either case, additional
+//! allocations are avoided.
 use std::{borrow::Cow, io::Read};
 
 use serde::{Deserialize, Serialize};
@@ -59,8 +59,7 @@ impl<'a> Chunks<'a> {
 
     /// Create a Chunks-object from chunks. The `remaining`-field will be
     /// overriden with the actual remaining bytes.
-    pub fn from_chunks(mut v: Vec<Chunk<'a>>) -> Result<Chunks<'a>, ChunksError>
-    {
+    pub fn from_chunks(v: Vec<Chunk<'a>>) -> Result<Chunks<'a>, ChunksError> {
         let mut r_iter = v.iter().rev();
         let chunk_size = v.first().map(|c| c.data.len()).unwrap_or(0);
         if r_iter.clone().skip(1).any(|c| c.data.len() != chunk_size) {
@@ -116,7 +115,7 @@ impl<'a> Chunks<'a> {
     }
 
     pub fn id(&self) -> Id {
-        self.id.clone()
+        self.id
     }
 
     pub fn chunk_size(&self) -> usize {
