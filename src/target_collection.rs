@@ -1,6 +1,9 @@
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use tokio::{task::JoinHandle};
+use tokio::task::JoinHandle;
 
 use crate::{
     command::new_from_config,
