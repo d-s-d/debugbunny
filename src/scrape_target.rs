@@ -67,7 +67,6 @@ impl<T> Timeout<T> {
 impl<T> ScrapeService for Timeout<T>
 where
     T: ScrapeService,
-    T::Response: Send + 'static,
 {
     type Response = T::Response;
     fn call(&mut self) -> FutureScrapeResult<Self::Response> {
