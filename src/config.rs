@@ -4,6 +4,7 @@ use reqwest::{Method, Url};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, DurationSeconds};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub scrape_targets: Vec<ScrapeTargetConfig>,
 }

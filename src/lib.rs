@@ -19,7 +19,8 @@
 //! running call will delay new calls.
 //!
 //! ## Architecture
-//! ```no_run
+//!
+//! ```text
 //! +--------------------------------------------+
 //! | Scheduled Target     | Unscheduled Target  |
 //! +--------------------------------------------+        
@@ -34,7 +35,7 @@
 pub mod chunks;
 pub mod command;
 pub mod config;
+pub mod debugbunny;
 pub mod http;
 pub mod result_processor;
 pub mod scrape_target;
-pub mod target_collection;
