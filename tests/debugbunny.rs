@@ -1,12 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use debugbunny::{
-    config::{Action, Config, ScrapeTargetConfig},
+    config::{Action, Config, ScrapeTargetBuilder, ScrapeTargetConfig},
     debugbunny::DebugBunny,
     result_processor::ScrapeResultProcessor,
     scrape_target::{ScrapeOk, ScrapeResult},
 };
-use http::Method;
 use httptest::{matchers::*, responders::*, Expectation, Server};
 use tokio::sync::Mutex;
 use url::Url;
@@ -20,27 +19,29 @@ async fn asdf() {
             .respond_with(status_code(200).body("hello world".as_bytes().to_vec())),
     );
 
-    let url = server.url("/metrics");
-    let config = Config {
-        scrape_targets: vec![
-            ScrapeTargetConfig {
-                interval: Duration::from_millis(500),
-                timeout: Some(Duration::from_millis(200)),
-                action: Action::Http {
-                    method: Some(Method::GET),
-                    url: Url::parse(&url.to_string()).unwrap(),
-                },
-            },
-            ScrapeTargetConfig {
-                interval: Duration::from_millis(500),
-                timeout: Some(Duration::from_millis(200)),
-                action: Action::Command {
-                    command: "echo".to_string(),
-                    args: vec!["hello world from command".to_string()],
-                },
-            },
-        ],
-    };
+    let uri = server.url("/metrics");
+    let url = Url::parse(&uri.to_string()).unwrap();
+
+    let mut config = Config::new();
+    let half_sec = Duration::from_millis(500);
+    let quarter_sec = half_sec / 2;
+    config.add_target(
+        ScrapeTargetBuilder::new()
+            .interval(half_sec)
+            .timeout(quarter_sec)
+            .action(Action::http(url))
+            .build(),
+    );
+    config.add_target(
+        ScrapeTargetBuilder::new()
+            .interval(half_sec)
+            .timeout(quarter_sec)
+            .action(Action::command_with_args(
+                "echo",
+                vec!["hello world from command"],
+            ))
+            .build(),
+    );
 
     let collector = ResultCollector::default();
     let debugbunny =
@@ -49,20 +50,13 @@ async fn asdf() {
     tokio::time::sleep(Duration::from_millis(250)).await;
     debugbunny.await_shutdown().await;
 
-    assert!(collector
-        .results
-        .lock()
-        .await
-        .iter()
-        .filter(|(c, r)| matches!(
+    assert!(collector.results.lock().await.iter().any(|(c, r)| matches!(
             (c, r),
             (ScrapeTargetConfig {
                 action: Action::Http { .. },
                 ..
             },
-            Ok(ScrapeOk::HttpResponse(resp))) if resp.body() == "hello world".as_bytes()))
-        .next()
-        .is_some());
+            Ok(ScrapeOk::HttpResponse(resp))) if resp.body() == "hello world".as_bytes())));
 }
 
 type SharedResults = Arc<Mutex<Vec<(ScrapeTargetConfig, ScrapeResult<ScrapeOk>)>>>;
