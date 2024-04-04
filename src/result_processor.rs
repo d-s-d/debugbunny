@@ -94,6 +94,7 @@ where
 
             // All heavy computation is done here, so grab the mutex and write
             // the log lines.
+            meta.get_mut().push(b'\n');
             let mut guard = writer.lock().await;
             tokio::io::copy(&mut meta, &mut *guard).await?;
 
@@ -107,6 +108,7 @@ where
                     };
 
                     let mut chunk_json = Cursor::new(serde_json::to_vec(&c).expect("can't fail"));
+                    chunk_json.get_mut().push(b'\n');
                     tokio::io::copy(&mut chunk_json, &mut *guard).await?;
                 }
             }
@@ -134,7 +136,7 @@ pub struct ScrapeCallRepr {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type")]
+#[serde(tag = "outcome")]
 pub enum ScrapeResultRepr {
     Success(ScrapeOkRepr),
     Error { message: String },

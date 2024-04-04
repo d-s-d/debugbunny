@@ -1,7 +1,10 @@
 use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 
 use tokio::{
-    sync::Mutex,
+    sync::{
+        watch::{self, Receiver, Sender},
+        Mutex,
+    },
     time::{error::Elapsed, Instant},
 };
 
@@ -51,6 +54,8 @@ pub enum ScrapeErr {
     IoErr(#[from] io::Error),
     #[error("Scrape timed out")]
     Timeout(#[from] Elapsed),
+    #[error("Cancelled")]
+    Cancelled,
 }
 
 pub struct Timeout<T> {
@@ -76,10 +81,10 @@ where
     }
 }
 
-/// A scrape target is a pair if scrape services ([ScheduledScrapeTarget],
-/// [UnscheduledScrapeTarget]). Calls to the first one resolve at the specified
-/// rate _at most_, while calls to the second delay the schedule and resolve as
-/// soon as possible.
+/// A scrape target is essentially a pair if scrape services
+/// ([ScheduledScrapeTarget], [UnscheduledScrapeTarget]). Calls to the first one
+/// resolve at the specified rate _at most_, while calls to the second delay the
+/// schedule and resolve as soon as possible.
 ///
 /// The idea is that the first one can be used in a busy loop to call scrapes at
 /// the specified rate.
@@ -92,22 +97,37 @@ where
 /// method calls take an exlusive reference (`&mut`). Using internal mutability
 /// (`&self`), on the other hand, incurs the same implementation overhead as the
 /// current approach.
-pub fn create_scrape_target<T>(
-    inner: T,
-    interval: Duration,
-) -> (ScheduledScrapeTarget<T>, UnscheduledScrapeTarget<T>) {
-    let inner = Arc::new(Mutex::new(SyncedService {
-        inner,
-        wakeup: Instant::now(),
-        interval,
-    }));
+pub struct ScrapeTarget<T> {
+    pub scheduled: ScheduledScrapeTarget<T>,
+    pub unscheduled: UnscheduledScrapeTarget<T>,
+    pub cancel_signal: Option<Sender<()>>,
+}
 
-    (
-        ScheduledScrapeTarget {
-            inner: inner.clone(),
-        },
-        UnscheduledScrapeTarget { inner },
-    )
+impl<T> ScrapeTarget<T> {
+    pub fn new(inner: T, interval: Duration) -> Self {
+        let (cancel_signal, cancel) = watch::channel(());
+        Self {
+            cancel_signal: Some(cancel_signal),
+            ..Self::new_with_cancel(inner, interval, cancel)
+        }
+    }
+
+    pub fn new_with_cancel(inner: T, interval: Duration, cancel: Receiver<()>) -> Self {
+        let inner = Arc::new(Mutex::new(SyncedService {
+            inner,
+            wakeup: Instant::now(),
+            interval,
+        }));
+
+        Self {
+            scheduled: ScheduledScrapeTarget {
+                inner: inner.clone(),
+                cancel,
+            },
+            unscheduled: UnscheduledScrapeTarget { inner },
+            cancel_signal: None,
+        }
+    }
 }
 
 struct SyncedService<T> {
@@ -153,6 +173,7 @@ impl<T> SyncedService<T> {
 /// by _at least_ on interval.
 pub struct ScheduledScrapeTarget<T> {
     inner: Arc<Mutex<SyncedService<T>>>,
+    cancel: Receiver<()>,
 }
 
 impl<T> ScrapeService for ScheduledScrapeTarget<T>
@@ -162,6 +183,7 @@ where
     type Response = T::Response;
     fn call(&mut self) -> FutureScrapeResult<Self::Response> {
         let inner = self.inner.clone();
+        let mut cancel = self.cancel.clone();
         Box::pin(async move {
             loop {
                 let wakeup = {
@@ -174,7 +196,10 @@ where
                     }
                     lockguard.wakeup
                 };
-                tokio::time::sleep_until(wakeup).await;
+                tokio::select! {
+                    _ = tokio::time::sleep_until(wakeup) => continue,
+                    _ = cancel.changed() => break Err(ScrapeErr::Cancelled)
+                }
             }
         })
     }
@@ -209,20 +234,20 @@ mod tests {
         let timeout = Duration::from_millis(40);
         let service = Counter(0);
         let service = Timeout::new(service, timeout);
-        let (mut sched, mut unsched) = create_scrape_target(service, Duration::from_millis(50));
+        let mut st = ScrapeTarget::new(service, Duration::from_millis(50));
         for i in 0..5 {
-            assert_eq!(i, sched.call().await.unwrap());
+            assert_eq!(i, st.scheduled.call().await.unwrap());
         }
-        assert_eq!(5, unsched.call().await.unwrap());
+        assert_eq!(5, st.unscheduled.call().await.unwrap());
         for i in 6..10 {
-            assert_eq!(i, sched.call().await.unwrap());
+            assert_eq!(i, st.scheduled.call().await.unwrap());
         }
         assert!(matches!(
-            unsched.call().await,
+            st.unscheduled.call().await,
             ScrapeResult::Err(ScrapeErr::Timeout(_))
         ));
         for i in 11..15 {
-            assert_eq!(i, sched.call().await.unwrap());
+            assert_eq!(i, st.scheduled.call().await.unwrap());
         }
     }
 

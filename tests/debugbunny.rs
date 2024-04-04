@@ -48,6 +48,7 @@ async fn asdf() {
         DebugBunny::start_scraping(config.clone().scrape_targets, collector.clone()).await;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
+    debugbunny.stop();
     debugbunny.await_shutdown().await;
 
     assert!(collector.results.lock().await.iter().any(|(c, r)| matches!(
