@@ -11,16 +11,34 @@ use tokio::sync::Mutex;
 use url::Url;
 
 #[tokio::test]
-async fn asdf() {
+async fn two_http_and_one_command() {
     let server = Server::run();
+    let metrics_path = "/metrics";
+    let ladygaga_path = "/ladygaga";
+    let metrics_reponse = "hello world";
+    let ladygaga_response = "whatever";
+    let command_out = "hello world from command";
+
     server.expect(
-        Expectation::matching(request::method_path("GET", "/metrics"))
+        Expectation::matching(request::method_path("GET", metrics_path))
             .times(1..)
-            .respond_with(status_code(200).body("hello world".as_bytes().to_vec())),
+            .respond_with(status_code(200).body(metrics_reponse.as_bytes().to_vec())),
+    );
+    server.expect(
+        Expectation::matching(request::method_path("GET", ladygaga_path))
+            .times(1..)
+            .respond_with(status_code(200).body(ladygaga_response.as_bytes().to_vec())),
     );
 
-    let uri = server.url("/metrics");
-    let url = Url::parse(&uri.to_string()).unwrap();
+    let uri = server.url(metrics_path);
+    // xxx(dsd): whowever got the idea of returning a URI (!) from a method
+    // called url.
+    let metrics_url = Url::parse(&uri.to_string()).unwrap();
+
+    let uri = server.url(ladygaga_path);
+    // xxx(dsd): whowever got the idea of returning a URI (!) from a method
+    // called url.
+    let ladygaga_url = Url::parse(&uri.to_string()).unwrap();
 
     let mut config = Config::new();
     let half_sec = Duration::from_millis(500);
@@ -29,17 +47,21 @@ async fn asdf() {
         ScrapeTargetBuilder::new()
             .interval(half_sec)
             .timeout(quarter_sec)
-            .action(Action::http(url))
+            .action(Action::http(metrics_url.clone()))
             .build(),
     );
     config.add_target(
         ScrapeTargetBuilder::new()
             .interval(half_sec)
             .timeout(quarter_sec)
-            .action(Action::command_with_args(
-                "echo",
-                vec!["hello world from command"],
-            ))
+            .action(Action::http(ladygaga_url.clone()))
+            .build(),
+    );
+    config.add_target(
+        ScrapeTargetBuilder::new()
+            .interval(half_sec)
+            .timeout(quarter_sec)
+            .action(Action::command_with_args("echo", vec![command_out]))
             .build(),
     );
 
@@ -54,10 +76,28 @@ async fn asdf() {
     assert!(collector.results.lock().await.iter().any(|(c, r)| matches!(
             (c, r),
             (ScrapeTargetConfig {
-                action: Action::Http { .. },
+                action: Action::Http { 
+                    url,
+                    .. },
                 ..
             },
-            Ok(ScrapeOk::HttpResponse(resp))) if resp.body() == "hello world".as_bytes())));
+            Ok(ScrapeOk::HttpResponse(resp))) if resp.body() == metrics_reponse.as_bytes() && *url == metrics_url)));
+    assert!(collector.results.lock().await.iter().any(|(c, r)| matches!(
+            (c, r),
+            (ScrapeTargetConfig {
+                action: Action::Http { 
+                    url,
+                    .. },
+                ..
+            },
+            Ok(ScrapeOk::HttpResponse(resp))) if resp.body() == ladygaga_response.as_bytes() && *url == ladygaga_url)));
+    assert!(collector.results.lock().await.iter().any(|(c, r)| matches!(
+            (c, r),
+            (ScrapeTargetConfig {
+                action: Action::Command { .. },
+                ..
+            },
+            Ok(ScrapeOk::CommandResponse(out))) if out.stdout.windows(command_out.len()).any(|w| w == command_out.as_bytes()))));
 }
 
 type SharedResults = Arc<Mutex<Vec<(ScrapeTargetConfig, ScrapeResult<ScrapeOk>)>>>;
