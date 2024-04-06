@@ -61,11 +61,16 @@ pub enum ScrapeErr {
 pub struct Timeout<T> {
     inner: T,
     timeout: Duration,
+    cancel: Option<Receiver<()>>
 }
 
 impl<T> Timeout<T> {
     pub fn new(inner: T, timeout: Duration) -> Self {
-        Self { inner, timeout }
+        Self { inner, timeout, cancel: None }
+    }
+
+    pub fn new_with_cancel(inner: T, timeout: Duration, cancel: Receiver<()>) -> Self {
+        Self { inner, timeout, cancel: Some(cancel) }
     }
 }
 
@@ -77,6 +82,15 @@ where
     fn call(&mut self) -> FutureScrapeResult<Self::Response> {
         let timeout = self.timeout;
         let call = self.inner.call();
+        if let Some(cancel) = &self.cancel {
+            let mut cancel = cancel.clone();
+            return Box::pin(async move { 
+                tokio::select! {
+                    r = tokio::time::timeout(timeout, call) => r?,
+                    _ = cancel.changed() => Err(ScrapeErr::Cancelled)
+                }
+            })
+        }
         Box::pin(async move { tokio::time::timeout(timeout, call).await? })
     }
 }
