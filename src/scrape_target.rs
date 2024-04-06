@@ -2,7 +2,7 @@ use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 
 use tokio::{
     sync::{
-        watch::{self, Receiver, Sender},
+        watch::{Receiver, Sender},
         Mutex,
     },
     time::{error::Elapsed, Instant},
@@ -61,16 +61,24 @@ pub enum ScrapeErr {
 pub struct Timeout<T> {
     inner: T,
     timeout: Duration,
-    cancel: Option<Receiver<()>>
+    cancel: Option<Receiver<()>>,
 }
 
 impl<T> Timeout<T> {
     pub fn new(inner: T, timeout: Duration) -> Self {
-        Self { inner, timeout, cancel: None }
+        Self {
+            inner,
+            timeout,
+            cancel: None,
+        }
     }
 
     pub fn new_with_cancel(inner: T, timeout: Duration, cancel: Receiver<()>) -> Self {
-        Self { inner, timeout, cancel: Some(cancel) }
+        Self {
+            inner,
+            timeout,
+            cancel: Some(cancel),
+        }
     }
 }
 
@@ -84,12 +92,12 @@ where
         let call = self.inner.call();
         if let Some(cancel) = &self.cancel {
             let mut cancel = cancel.clone();
-            return Box::pin(async move { 
+            return Box::pin(async move {
                 tokio::select! {
                     r = tokio::time::timeout(timeout, call) => r?,
                     _ = cancel.changed() => Err(ScrapeErr::Cancelled)
                 }
-            })
+            });
         }
         Box::pin(async move { tokio::time::timeout(timeout, call).await? })
     }
@@ -119,14 +127,14 @@ pub struct ScrapeTarget<T> {
 
 impl<T> ScrapeTarget<T> {
     pub fn new(inner: T, interval: Duration) -> Self {
-        let (cancel_signal, cancel) = watch::channel(());
-        Self {
-            cancel_signal: Some(cancel_signal),
-            ..Self::new_with_cancel(inner, interval, cancel)
-        }
+        Self::new_with_cancel_opt(inner, interval, None)
     }
 
     pub fn new_with_cancel(inner: T, interval: Duration, cancel: Receiver<()>) -> Self {
+        Self::new_with_cancel_opt(inner, interval, Some(cancel))
+    }
+
+    fn new_with_cancel_opt(inner: T, interval: Duration, cancel: Option<Receiver<()>>) -> Self {
         let inner = Arc::new(Mutex::new(SyncedService {
             inner,
             wakeup: Instant::now(),
@@ -187,7 +195,7 @@ impl<T> SyncedService<T> {
 /// by _at least_ on interval.
 pub struct ScheduledScrapeTarget<T> {
     inner: Arc<Mutex<SyncedService<T>>>,
-    cancel: Receiver<()>,
+    cancel: Option<Receiver<()>>,
 }
 
 impl<T> ScrapeService for ScheduledScrapeTarget<T>
@@ -210,10 +218,13 @@ where
                     }
                     lockguard.wakeup
                 };
-                tokio::select! {
-                    _ = tokio::time::sleep_until(wakeup) => continue,
-                    _ = cancel.changed() => break Err(ScrapeErr::Cancelled)
+                if let Some(ref mut cancel) = cancel {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(wakeup) => continue,
+                        _ = cancel.changed() => break Err(ScrapeErr::Cancelled)
+                    }
                 }
+                tokio::time::sleep_until(wakeup).await;
             }
         })
     }

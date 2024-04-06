@@ -67,7 +67,11 @@ impl DebugBunny {
         S: ScrapeService<Response = ScrapeOk> + 'static,
         P: ScrapeResultProcessor + 'static,
     {
-        let t = Timeout::new_with_cancel(s, c.timeout.unwrap_or(Duration::from_secs(2)), cancel.clone());
+        let t = Timeout::new_with_cancel(
+            s,
+            c.timeout.unwrap_or(Duration::from_secs(2)),
+            cancel.clone(),
+        );
         let st = ScrapeTarget::new_with_cancel(t, c.interval, cancel.clone());
         let mut s = st.scheduled;
         let u = st.unscheduled;
