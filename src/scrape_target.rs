@@ -30,6 +30,8 @@ pub trait ScrapeService: Send {
     fn call(&mut self) -> FutureScrapeResult<Self::Response>;
 }
 
+// This is the equivalent of
+// https://github.com/tower-rs/tower/blob/39adf5c509a1b2141f679654d8317524ca96b58b/tower-service/src/lib.rs#L375
 impl<T: ScrapeService + ?Sized> ScrapeService for Box<T> {
     type Response = T::Response;
 
