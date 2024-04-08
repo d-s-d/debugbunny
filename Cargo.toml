@@ -21,3 +21,7 @@ zstd = "0.13"
 
 [dev-dependencies]
 httptest = "0.15"
+
+[[bin]]
+name = "http_and_ss"
+path = "src/examples/http_and_ss.rs"
